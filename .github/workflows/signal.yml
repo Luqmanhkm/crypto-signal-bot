@@ -2,8 +2,8 @@ name: Crypto Signal Check
 
 on:
   schedule:
-    # Jalan tiap 15 menit (format cron: menit jam tanggal bulan hari)
-    - cron: "*/15 * * * *"
+    # Jalan tiap 5 menit (selaras dengan candle 5 menit)
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     # Biar bisa di-trigger manual dari tab Actions di GitHub buat testing
 
@@ -26,4 +26,4 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python crypto_signal_bot.py --symbol BTCUSDT --interval 15m --mode once
+        run: python crypto_signal_bot.py --symbol BTCUSDT --interval 5m --mode once
