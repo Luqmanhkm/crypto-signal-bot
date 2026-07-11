@@ -1,0 +1,29 @@
+name: Crypto Signal Check
+
+on:
+  schedule:
+    # Jalan tiap 15 menit (format cron: menit jam tanggal bulan hari)
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    # Biar bisa di-trigger manual dari tab Actions di GitHub buat testing
+
+jobs:
+  check-signal:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pandas numpy requests
+
+      - name: Run signal check
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python crypto_signal_bot.py --symbol BTCUSDT --interval 15m --mode once
