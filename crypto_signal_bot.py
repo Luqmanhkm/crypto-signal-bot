@@ -35,8 +35,8 @@ BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines"
 # setelah diisi manual (token = password bot).
 # ----------------------------------------------------------------------
 import os
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8980395101:AAE-kZI7BRpMmSROm5YU2CwduurZ6HpB0VY")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "1282001415")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 
 # ----------------------------------------------------------------------
