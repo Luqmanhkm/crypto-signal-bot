@@ -18,6 +18,7 @@ Cara pakai cepat:
 """
 
 import argparse
+import json
 import time
 from datetime import datetime
 
@@ -107,8 +108,10 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # ----------------------------------------------------------------------
 def generate_signal(df: pd.DataFrame, rr_ratio: float = 2.0) -> dict:
     """
-    Cek 2 candle terakhir untuk deteksi golden cross EMA9/EMA21,
-    dikonfirmasi RSI di zona sehat (40-70).
+    Cek 2 candle terakhir untuk deteksi cross EMA9/EMA21 (naik ATAU turun),
+    dikonfirmasi RSI di zona sehat.
+    BUY  : EMA9 cross NAIK di atas EMA21, RSI 40-70
+    SELL : EMA9 cross TURUN di bawah EMA21, RSI 30-60
     Return dict berisi sinyal + level entry/TP/SL.
     """
     if len(df) < 25:
@@ -118,9 +121,11 @@ def generate_signal(df: pd.DataFrame, rr_ratio: float = 2.0) -> dict:
     prev = df.iloc[-2]
 
     cross_up = prev["ema9"] <= prev["ema21"] and last["ema9"] > last["ema21"]
-    rsi_ok = 40 <= last["rsi14"] <= 70
+    cross_down = prev["ema9"] >= prev["ema21"] and last["ema9"] < last["ema21"]
+    rsi_ok_buy = 40 <= last["rsi14"] <= 70
+    rsi_ok_sell = 30 <= last["rsi14"] <= 60
 
-    if cross_up and rsi_ok:
+    if cross_up and rsi_ok_buy:
         entry = last["close"]
         sl = entry - last["atr14"]
         tp = entry + last["atr14"] * rr_ratio
@@ -134,6 +139,20 @@ def generate_signal(df: pd.DataFrame, rr_ratio: float = 2.0) -> dict:
             "reason": "EMA9 cross up EMA21, RSI netral",
         }
 
+    if cross_down and rsi_ok_sell:
+        entry = last["close"]
+        sl = entry + last["atr14"]
+        tp = entry - last["atr14"] * rr_ratio
+        return {
+            "signal": "SELL",
+            "time": last["open_time"],
+            "entry": round(entry, 4),
+            "stop_loss": round(sl, 4),
+            "take_profit": round(tp, 4),
+            "rsi": round(last["rsi14"], 1),
+            "reason": "EMA9 cross down EMA21, RSI netral",
+        }
+
     return {"signal": "HOLD", "rsi": round(last["rsi14"], 1) if not np.isnan(last["rsi14"]) else None}
 
 
@@ -142,40 +161,57 @@ def generate_signal(df: pd.DataFrame, rr_ratio: float = 2.0) -> dict:
 # ----------------------------------------------------------------------
 def backtest(df: pd.DataFrame, rr_ratio: float = 2.0) -> dict:
     """
-    Simulasi: setiap kali muncul sinyal BUY, cek candle-candle berikutnya
-    apakah harga kena TP dulu atau SL dulu. Hitung win rate & rata2 hasil.
+    Simulasi: setiap kali muncul sinyal BUY/SELL, cek candle-candle berikutnya
+    apakah harga kena TP dulu atau SL dulu. Hitung win rate & rata2 hasil,
+    dipecah per jenis sinyal.
     """
     df = compute_indicators(df)
-    trades = []
+    trades = []  # list of (signal_type, outcome)
 
     for i in range(25, len(df) - 1):
         window = df.iloc[: i + 1]
         sig = generate_signal(window, rr_ratio)
-        if sig["signal"] != "BUY":
+        if sig["signal"] not in ("BUY", "SELL"):
             continue
 
         entry, sl, tp = sig["entry"], sig["stop_loss"], sig["take_profit"]
         outcome = None
         for j in range(i + 1, len(df)):
             high, low = df.iloc[j]["high"], df.iloc[j]["low"]
-            if low <= sl:
-                outcome = "LOSS"
-                break
-            if high >= tp:
-                outcome = "WIN"
-                break
+            if sig["signal"] == "BUY":
+                if low <= sl:
+                    outcome = "LOSS"
+                    break
+                if high >= tp:
+                    outcome = "WIN"
+                    break
+            else:  # SELL
+                if high >= sl:
+                    outcome = "LOSS"
+                    break
+                if low <= tp:
+                    outcome = "WIN"
+                    break
         if outcome:
-            trades.append(outcome)
+            trades.append((sig["signal"], outcome))
 
-    total = len(trades)
-    wins = trades.count("WIN")
-    win_rate = (wins / total * 100) if total else 0
+    def summarize(subset):
+        total = len(subset)
+        wins = sum(1 for _, o in subset if o == "WIN")
+        return {
+            "total_trades": total,
+            "wins": wins,
+            "losses": total - wins,
+            "win_rate_pct": round((wins / total * 100) if total else 0, 1),
+        }
+
+    buy_trades = [t for t in trades if t[0] == "BUY"]
+    sell_trades = [t for t in trades if t[0] == "SELL"]
 
     return {
-        "total_trades": total,
-        "wins": wins,
-        "losses": total - wins,
-        "win_rate_pct": round(win_rate, 1),
+        "overall": summarize(trades),
+        "buy": summarize(buy_trades),
+        "sell": summarize(sell_trades),
     }
 
 
@@ -205,10 +241,10 @@ def run_live(symbol: str, interval: str, poll_seconds: int = 60):
             df = compute_indicators(df)
             sig = generate_signal(df)
 
-            if sig["signal"] == "BUY" and sig.get("time") != last_signal_time:
+            if sig["signal"] in ("BUY", "SELL") and sig.get("time") != last_signal_time:
                 last_signal_time = sig["time"]
                 msg = (
-                    f"[{symbol}] SINYAL BUY @ {sig['entry']}\n"
+                    f"[{symbol}] SINYAL {sig['signal']} @ {sig['entry']}\n"
                     f"TP: {sig['take_profit']} | SL: {sig['stop_loss']}\n"
                     f"RSI: {sig['rsi']} | Alasan: {sig['reason']}"
                 )
@@ -223,23 +259,51 @@ def run_live(symbol: str, interval: str, poll_seconds: int = 60):
         time.sleep(poll_seconds)
 
 
+STATE_FILE = "last_signal_state.json"
+
+
+def load_last_signal_time() -> str:
+    """Baca waktu candle sinyal terakhir yang sudah dikirim, dari file state."""
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+        return data.get("last_signal_time")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def save_last_signal_time(signal_time) -> None:
+    """Simpan waktu candle sinyal terakhir yang sudah dikirim ke file state."""
+    with open(STATE_FILE, "w") as f:
+        json.dump({"last_signal_time": str(signal_time)}, f)
+
+
 def run_once(symbol: str, interval: str):
     """
     Cek sinyal SEKALI SAJA lalu keluar. Cocok dipanggil berkala oleh
     penjadwal eksternal seperti GitHub Actions (cron), bukan loop sendiri.
+    Pakai file state supaya TIDAK kirim notif duplikat untuk candle yang sama
+    walau script dipanggil berkali-kali (misal tiap 1 menit) sebelum candle
+    barunya kebentuk.
     """
     df = fetch_klines(symbol, interval, limit=200)
     df = compute_indicators(df)
     sig = generate_signal(df)
 
-    if sig["signal"] == "BUY":
+    if sig["signal"] in ("BUY", "SELL"):
+        last_sent = load_last_signal_time()
+        current_key = f"{sig['signal']}_{sig['time']}"
+        if current_key == last_sent:
+            print(f"{datetime.now()} - Sinyal {sig['signal']} di candle ini sudah pernah dikirim, skip.")
+            return
         msg = (
-            f"[{symbol}] SINYAL BUY @ {sig['entry']}\n"
+            f"[{symbol}] SINYAL {sig['signal']} @ {sig['entry']}\n"
             f"TP: {sig['take_profit']} | SL: {sig['stop_loss']}\n"
             f"RSI: {sig['rsi']} | Alasan: {sig['reason']}"
         )
         print(f"{datetime.now()} {msg}")
         send_telegram_alert(msg)
+        save_last_signal_time(current_key)
     else:
         print(f"{datetime.now()} - {symbol}: HOLD (RSI={sig.get('rsi')})")
 
@@ -261,8 +325,14 @@ if __name__ == "__main__":
         print(f"Mengambil data historis {args.symbol} ({args.interval})...")
         df = fetch_klines(args.symbol, args.interval, limit=1000)
         result = backtest(df)
-        print("\n=== HASIL BACKTEST ===")
-        for k, v in result.items():
+        print("\n=== HASIL BACKTEST (KESELURUHAN) ===")
+        for k, v in result["overall"].items():
+            print(f"{k}: {v}")
+        print("\n=== HASIL BACKTEST (BUY saja) ===")
+        for k, v in result["buy"].items():
+            print(f"{k}: {v}")
+        print("\n=== HASIL BACKTEST (SELL saja) ===")
+        for k, v in result["sell"].items():
             print(f"{k}: {v}")
         print("\nCatatan: hasil di masa lalu tidak menjamin hasil sama di masa depan.")
     else:
