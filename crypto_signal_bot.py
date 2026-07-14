@@ -39,6 +39,10 @@ import os
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+# Toggle: matiin dulu notif SELL selama market masih uptrend kuat
+# (ganti True kalau mau aktifin lagi nanti)
+ENABLE_SELL_SIGNALS = False
+
 
 # ----------------------------------------------------------------------
 # 1. AMBIL DATA
@@ -242,14 +246,17 @@ def run_live(symbol: str, interval: str, poll_seconds: int = 60):
             sig = generate_signal(df)
 
             if sig["signal"] in ("BUY", "SELL") and sig.get("time") != last_signal_time:
-                last_signal_time = sig["time"]
-                msg = (
-                    f"[{symbol}] SINYAL {sig['signal']} @ {sig['entry']}\n"
-                    f"TP: {sig['take_profit']} | SL: {sig['stop_loss']}\n"
-                    f"RSI: {sig['rsi']} | Alasan: {sig['reason']}"
-                )
-                print(f"\n{datetime.now()} {msg}\n")
-                send_telegram_alert(msg)
+                if sig["signal"] == "SELL" and not ENABLE_SELL_SIGNALS:
+                    print(f"{datetime.now()} - {symbol}: SELL terdeteksi tapi notif SELL sedang dimatikan.")
+                else:
+                    last_signal_time = sig["time"]
+                    msg = (
+                        f"[{symbol}] SINYAL {sig['signal']} @ {sig['entry']}\n"
+                        f"TP: {sig['take_profit']} | SL: {sig['stop_loss']}\n"
+                        f"RSI: {sig['rsi']} | Alasan: {sig['reason']}"
+                    )
+                    print(f"\n{datetime.now()} {msg}\n")
+                    send_telegram_alert(msg)
             else:
                 print(f"{datetime.now()} - {symbol}: HOLD (RSI={sig.get('rsi')})")
 
@@ -291,6 +298,9 @@ def run_once(symbol: str, interval: str):
     sig = generate_signal(df)
 
     if sig["signal"] in ("BUY", "SELL"):
+        if sig["signal"] == "SELL" and not ENABLE_SELL_SIGNALS:
+            print(f"{datetime.now()} - Sinyal SELL terdeteksi tapi notif SELL sedang dimatikan, skip.")
+            return
         last_sent = load_last_signal_time()
         current_key = f"{sig['signal']}_{sig['time']}"
         if current_key == last_sent:
